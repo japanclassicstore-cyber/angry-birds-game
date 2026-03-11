@@ -177,6 +177,20 @@
             margin-top: 10px;
             font-size: 12px;
         }
+        .status-message {
+            margin: 12px 0;
+            padding: 10px 12px;
+            border-radius: 8px;
+            background: #eef6ea;
+            color: #275d38;
+            font-size: 12px;
+            line-height: 1.5;
+            min-height: 38px;
+        }
+        .status-message.error {
+            background: #fdecec;
+            color: #9b1c1c;
+        }
         @media (max-width: 1400px) {
             #gameWrapper {
                 flex-direction: column;
@@ -225,6 +239,8 @@
             <input type="text" id="playerName" placeholder="Enter your name" maxlength="20" value="Player">
             
             <button onclick="saveScore()">💾 Save Score</button>
+
+            <div id="statusMessage" class="status-message">Game ready. Scores save locally unless a MongoDB URI is configured.</div>
             
             <div id="leaderboard">
                 <h3>🏆 Leaderboard</h3>
@@ -239,7 +255,9 @@
 
     <script>
         // API Base URL - Uses relative path for Vercel
-        const API_URL = window.location.origin.includes('localhost') 
+        const API_URL = window.location.protocol === 'file:'
+            ? 'http://localhost:3000/api'
+            : window.location.origin.includes('localhost') 
             ? 'http://localhost:3000/api' 
             : '/api';
 
@@ -306,8 +324,10 @@
         }
 
         // Game state
+        const TOTAL_BIRDS = 3;
+
         let score = 0;
-        let birdsLeft = 3;
+        let birdsLeft = TOTAL_BIRDS;
         let currentBird = null;
         let isDragging = false;
         let dragStart = { x: 0, y: 0 };
@@ -318,6 +338,7 @@
         let shotVelocities = [];
         let maxVelocity = 0;
         let currentShot = null;
+        let gameResult = null;
         
         // Physics constants
         const GRAVITY = 0.5;
@@ -628,6 +649,12 @@
                 particles.push(new Particle(x, y, color));
             }
         }
+
+        function setStatus(message, isError = false) {
+            const statusMessage = document.getElementById('statusMessage');
+            statusMessage.textContent = message;
+            statusMessage.className = isError ? 'status-message error' : 'status-message';
+        }
         
         function recordShot() {
             if (!currentShot) return;
@@ -654,9 +681,11 @@
         // Initialize level
         function initLevel() {
             gameObjects = [];
+            particles = [];
             shotVelocities = [];
             maxVelocity = 0;
             currentShot = null;
+            gameResult = null;
             
             // Create structure
             const baseX = 900;
@@ -686,39 +715,52 @@
         }
         
         function resetBird() {
+            const pigsRemaining = gameObjects.filter(o => o instanceof Pig && o.active).length;
+
+            if (pigsRemaining === 0) {
+                currentBird = null;
+                checkWinAndSave();
+                updateUI();
+                return;
+            }
+
             if (birdsLeft > 0) {
-                birdsLeft--;
                 currentBird = new Bird(SLINGSHOT_POS.x, SLINGSHOT_POS.y);
                 updateUI();
-            } else {
-                currentBird = null;
-                setTimeout(() => {
-                    checkWinAndSave();
-                }, 1000);
+                return;
             }
+
+            currentBird = null;
+            checkWinAndSave();
+            updateUI();
         }
         
         function checkWinAndSave() {
             const pigsRemaining = gameObjects.filter(o => o instanceof Pig && o.active).length;
-            const status = pigsRemaining === 0 ? 'VICTORY!' : 'Game Over';
-            
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = pigsRemaining === 0 ? '#FFD700' : '#fff';
-            ctx.font = 'bold 60px Arial';
-            ctx.textAlign = 'center';
-            ctx.fillText(status, canvas.width/2, canvas.height/2 - 50);
-            ctx.font = '30px Arial';
-            ctx.fillText(`Score: ${score}`, canvas.width/2, canvas.height/2 + 20);
-            ctx.font = '20px Arial';
-            ctx.fillText(`Max Velocity: ${maxVelocity.toFixed(1)} m/s`, canvas.width/2, canvas.height/2 + 60);
+            gameResult = {
+                title: pigsRemaining === 0 ? 'VICTORY!' : 'Game Over',
+                color: pigsRemaining === 0 ? '#FFD700' : '#fff'
+            };
+
+            setStatus(
+                pigsRemaining === 0
+                    ? 'Level cleared. Save your score or start a new round.'
+                    : 'No birds left. Start a new round or save your score.'
+            );
         }
         
         function newGame() {
             score = 0;
-            birdsLeft = 3;
+            birdsLeft = TOTAL_BIRDS;
+            gameResult = null;
             initLevel();
             updateUI();
+            document.getElementById('currentVelocity').textContent = '0';
+            document.getElementById('maxVelocity').textContent = '0';
+            document.getElementById('avgVelocity').textContent = '0';
+            document.getElementById('velocityFill').style.width = '0%';
+            document.getElementById('velocityText').textContent = '0 m/s';
+            setStatus('New game started. Pull back the bird to launch.');
         }
         
         async function saveScore() {
@@ -731,7 +773,7 @@
             const data = {
                 playerName: playerName,
                 score: score,
-                birdsUsed: 3 - birdsLeft,
+                birdsUsed: TOTAL_BIRDS - birdsLeft,
                 pigsDestroyed: pigsDestroyed,
                 maxVelocity: maxVelocity,
                 avgVelocity: avgVel,
@@ -752,14 +794,32 @@
                 
                 const result = await response.json();
                 if (result.success) {
-                    alert('Score saved successfully!');
+                    setStatus(`Score saved successfully using ${result.storage} storage.`);
                     loadLeaderboard();
                 } else {
-                    alert('Error saving score: ' + result.error);
+                    setStatus(result.error || 'Score could not be saved.', true);
                 }
             } catch (err) {
                 console.error('Save error:', err);
-                alert('Failed to save score. Check console for details.');
+                setStatus('Failed to save score. Start the local server to enable the API.', true);
+            }
+        }
+
+        async function loadServerStatus() {
+            try {
+                const response = await fetch(`${API_URL}/health`);
+                const result = await response.json();
+
+                if (result.status === 'ok') {
+                    const storageLabel = result.storage === 'mongo'
+                        ? 'MongoDB'
+                        : result.storage === 'file'
+                            ? 'local file'
+                            : 'in-memory';
+                    setStatus(`API online. Leaderboard uses ${storageLabel} storage.`);
+                }
+            } catch (err) {
+                setStatus('API is offline. Gameplay still works, but score saving needs the local server.', true);
             }
         }
         
@@ -794,6 +854,23 @@
             document.getElementById('score').textContent = score;
             document.getElementById('sidebarScore').textContent = score;
             document.getElementById('birdsLeft').textContent = birdsLeft;
+        }
+
+        function drawEndScreen() {
+            if (!gameResult) {
+                return;
+            }
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = gameResult.color;
+            ctx.font = 'bold 60px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(gameResult.title, canvas.width/2, canvas.height/2 - 50);
+            ctx.font = '30px Arial';
+            ctx.fillText(`Score: ${score}`, canvas.width/2, canvas.height/2 + 20);
+            ctx.font = '20px Arial';
+            ctx.fillText(`Max Velocity: ${maxVelocity.toFixed(1)} m/s`, canvas.width/2, canvas.height/2 + 60);
         }
         
         // Draw slingshot
@@ -936,18 +1013,7 @@
                 checkCollisions();
             }
             
-            // Check win condition
-            const pigsRemaining = gameObjects.filter(o => o instanceof Pig && o.active).length;
-            if (pigsRemaining === 0 && birdsLeft >= 0 && currentBird === null) {
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = '#FFD700';
-                ctx.font = 'bold 60px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('LEVEL CLEARED!', canvas.width/2, canvas.height/2);
-                ctx.font = '30px Arial';
-                ctx.fillText(`Score: ${score}`, canvas.width/2, canvas.height/2 + 50);
-            }
+            drawEndScreen();
             
             requestAnimationFrame(gameLoop);
         }
@@ -1004,6 +1070,8 @@
             
             isDragging = false;
             currentBird.isLaunched = true;
+            birdsLeft = Math.max(0, birdsLeft - 1);
+            updateUI();
             
             const dx = SLINGSHOT_POS.x - currentBird.x;
             const dy = SLINGSHOT_POS.y - currentBird.y;
@@ -1059,6 +1127,7 @@
         
         // Start game
         initLevel();
+        loadServerStatus();
         loadLeaderboard();
         gameLoop();
     </script>
