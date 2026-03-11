@@ -1,0 +1,15 @@
+{
+  "name": "angry-birds-game",
+  "version": "1.0.0",
+  "description": "Angry Birds game with MongoDB backend",
+  "main": "api/index.js",
+  "scripts": {
+    "start": "node api/index.js",
+    "dev": "node api/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "mongoose": "^8.0.0",
+    "cors": "^2.8.5"
+  }
+}
